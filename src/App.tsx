@@ -1,11 +1,11 @@
 import { useState } from "react";
-import VodacomPayment from "./components/orange";
+import OrangeMoney from "./components/orange";
 
 
 function App() {
   return (
     <div>
-      <VodacomPayment />
+      <OrangeMoney />
     </div>
   );
 }
